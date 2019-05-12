@@ -875,98 +875,98 @@ if __name__ == '__main__':
         X_test = X_test[:, df_imp.feature[:1000].to_list()]
         
     print('\t- Making predictions...')
-    preds_tdidf = model.lgb_model.predict_proba(X_test)[:,1]
+    preds = model.lgb_model.predict_proba(X_test)[:,1]
     
     del X_test
     gc.collect()
     
     
     
-    print('\n### HASHING ###')          
-    print('\n| Data processing...\n')
-    data = r_data(MAX_LEN, vec='hash')
-    
-    print('\t- Reading data...')
-    train = data.read_data('../data/train.csv')\
-#    .sample(100000, random_state=42).reset_index(drop=True)
-    test = data.read_data('../data/test.csv', tr=False)
-    
-    print('\t- Cleaning data...')
-#    train = data.clean_text(train)
-#    test = data.clean_text(test)
-    train = data.df_parallelize_run(train, data.clean_text)
-    test = data.df_parallelize_run(test, data.clean_text)
-    
-    print('\t- Vectorizer...')
-    data.vector(pd.concat([train['comment_text'], test['comment_text']]))
-        
-    X_words = data.vector(train['comment_text'].values, train=False)
-    X_words_test = data.vector(test['comment_text'].values, train=False)
-    
-    print('\t- Generating final datasets...')
-    X_cols = ['ast', 'ex', 'qu', 'ar', 'ha', 'len_pr',
-           'num_words', 'len_max_word', 'len_min_word', 'num_bad_words',
-           'num_good_words', 'bad_ratio', 'good_ratio', 'bad_p_good', 'bad_m_good',
-           'ratio_max_len']
-    
-    y_train = np.where(train['target'] >= 0.5, 1, 0)
-    extra_data = csr_matrix(train[X_cols])
-    del train
-    gc.collect()
-
-    X_train = hstack([X_words, extra_data]).tocsr()
-    
-    del X_words
-    del extra_data
-    gc.collect()      
-    
-    print('\n\n| Modeling...\n')
-    model = r_lgb_model(k, params)
-    print('\t- Fitting...')
-    model._fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS)
-    
-    if FT_SEL:
-    
-        df_imp = pd.DataFrame({'feature': [i for i in range(X_train.shape[1])],
-                               'importance': model.lgb_model.feature_importances_})\
-                .sort_values('importance', ascending = False)
-                
-        X_train = X_train[:, df_imp.feature[:1000].to_list()]
-        
-        print('\n\n| Modeling with FT Selection...\n')
-        model = r_lgb_model(k, params)
-        print('\t- Fitting...')
-        model._fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS)
-    
-    del X_train
-    del y_train
-    gc.collect()
-    
-    
-    print('\n| Predictions...\n')    
-    print('\t- Generating final datasets...')
-    extra_data = csr_matrix(test[X_cols])
-    del test
-    gc.collect()
-
-    X_test = hstack([X_words_test, extra_data]).tocsr()
-    
-    del X_words_test
-    del extra_data
-    gc.collect()
-    
-    if FT_SEL:
-        X_test = X_test[:, df_imp.feature[:1000].to_list()]
-        
-    print('\t- Making predictions...')
-    preds_hash = model.lgb_model.predict_proba(X_test)[:,1]
-    
-    del X_test
-    gc.collect()
-    
-    
-    
-    preds = (preds_tdidf + preds_hash) / 2
+#    print('\n### HASHING ###')          
+#    print('\n| Data processing...\n')
+#    data = r_data(MAX_LEN, vec='hash')
+#    
+#    print('\t- Reading data...')
+#    train = data.read_data('../data/train.csv')\
+##    .sample(100000, random_state=42).reset_index(drop=True)
+#    test = data.read_data('../data/test.csv', tr=False)
+#    
+#    print('\t- Cleaning data...')
+##    train = data.clean_text(train)
+##    test = data.clean_text(test)
+#    train = data.df_parallelize_run(train, data.clean_text)
+#    test = data.df_parallelize_run(test, data.clean_text)
+#    
+#    print('\t- Vectorizer...')
+#    data.vector(pd.concat([train['comment_text'], test['comment_text']]))
+#        
+#    X_words = data.vector(train['comment_text'].values, train=False)
+#    X_words_test = data.vector(test['comment_text'].values, train=False)
+#    
+#    print('\t- Generating final datasets...')
+#    X_cols = ['ast', 'ex', 'qu', 'ar', 'ha', 'len_pr',
+#           'num_words', 'len_max_word', 'len_min_word', 'num_bad_words',
+#           'num_good_words', 'bad_ratio', 'good_ratio', 'bad_p_good', 'bad_m_good',
+#           'ratio_max_len']
+#    
+#    y_train = np.where(train['target'] >= 0.5, 1, 0)
+#    extra_data = csr_matrix(train[X_cols])
+#    del train
+#    gc.collect()
+#
+#    X_train = hstack([X_words, extra_data]).tocsr()
+#    
+#    del X_words
+#    del extra_data
+#    gc.collect()      
+#    
+#    print('\n\n| Modeling...\n')
+#    model = r_lgb_model(k, params)
+#    print('\t- Fitting...')
+#    model._fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS)
+#    
+#    if FT_SEL:
+#    
+#        df_imp = pd.DataFrame({'feature': [i for i in range(X_train.shape[1])],
+#                               'importance': model.lgb_model.feature_importances_})\
+#                .sort_values('importance', ascending = False)
+#                
+#        X_train = X_train[:, df_imp.feature[:1000].to_list()]
+#        
+#        print('\n\n| Modeling with FT Selection...\n')
+#        model = r_lgb_model(k, params)
+#        print('\t- Fitting...')
+#        model._fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS)
+#    
+#    del X_train
+#    del y_train
+#    gc.collect()
+#    
+#    
+#    print('\n| Predictions...\n')    
+#    print('\t- Generating final datasets...')
+#    extra_data = csr_matrix(test[X_cols])
+#    del test
+#    gc.collect()
+#
+#    X_test = hstack([X_words_test, extra_data]).tocsr()
+#    
+#    del X_words_test
+#    del extra_data
+#    gc.collect()
+#    
+#    if FT_SEL:
+#        X_test = X_test[:, df_imp.feature[:1000].to_list()]
+#        
+#    print('\t- Making predictions...')
+#    preds_hash = model.lgb_model.predict_proba(X_test)[:,1]
+#    
+#    del X_test
+#    gc.collect()
+#    
+#    
+#    
+#    preds = (preds_tdidf + preds_hash) / 2
     
     print('\n| Saving submission...')
     submission = pd.read_csv('../data/sample_submission.csv')
