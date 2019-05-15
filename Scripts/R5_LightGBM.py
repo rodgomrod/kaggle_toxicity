@@ -1,10 +1,11 @@
 import numpy as np
 import pandas as pd
 from nltk.corpus import stopwords
-from nltk.stem.porter import PorterStemmer
+#from nltk.stem.porter import PorterStemmer
 from sklearn.model_selection import StratifiedKFold
 from sklearn.feature_extraction.text import HashingVectorizer, TfidfVectorizer
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import balanced_accuracy_score, recall_score, roc_auc_score
 from scipy.sparse import hstack, csr_matrix, vstack
 import lightgbm as lgb
 import gc
@@ -140,7 +141,7 @@ class r_data(object):
                                                 lowercase=False)
         else:
             self.vectorizer = TfidfVectorizer(ngram_range=(1,2),
-                                              min_df=3, max_df=0.9,
+                                              min_df=3, max_df=0.3,
                                               strip_accents='unicode',
                                               use_idf=1,
                                               smooth_idf=1,
@@ -151,13 +152,9 @@ class r_data(object):
     def shuffler(self, df, n=50000):
         
         df = df[df.target >= 0.5]
-#        print(' '.join([random.choice(df.iloc[random.randint(0, df.shape[0]),:].comment_text.split())
-#                        for i in range(random.randint(10, 30))]))
         final_df = [' '.join([random.choice(df.iloc[random.randint(0, df.shape[0]-1),:].comment_text.split())
                         for i in range(random.randint(10, 30))]) for j in range(n)]
-        
         target = [1 for _ in range(n)]
-        
         return pd.DataFrame({'comment_text': final_df, 'target': target})
 
     def read_data(self, path, tr=True, n_rows=None):
@@ -232,6 +229,7 @@ class r_data(object):
         
         df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([i for i in x if not i.isdigit()]))
         df["comment_text"] = df["comment_text"].apply(lambda x: c_t2(x))
+#        df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([x_[1:] if x_.startswith("'") else x_ for x_ in x]))
         df["comment_text"] = df["comment_text"].apply(lambda x: remove_stop_words(x, self.STOP_WORDS))
         df["comment_text"] = df["comment_text"].apply(lambda x: remove_noise_chars(x, self.CHARS_TO_REMOVE))
 #        df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([self.stemmer.stem(word) for word in x.split()]))
@@ -265,6 +263,29 @@ class r_data(object):
         X = np.concatenate((X_words, data_extra), axis = 1)
 
         return X
+    
+    def get_weights(self, path):
+        identity_columns = [
+            'male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish',
+            'muslim', 'black', 'white', 'psychiatric_or_mental_illness', 'target']
+        
+        train = pd.read_csv(path, usecols=identity_columns).fillna(0)
+        # Overall
+        weights = np.ones((len(train),)) / 4
+        # Subgroup
+        weights += (train[identity_columns].values>=0.5).sum(axis=1).astype(bool).astype(np.int) / 4
+        # Background Positive, Subgroup Negative
+        weights += (( (train['target'].values>=0.5).astype(bool).astype(np.int) +
+           (train[identity_columns].fillna(0).values<0.5).sum(axis=1).astype(bool).astype(np.int) ) > 1 ).astype(bool).astype(np.int) / 4
+        # Background Negative, Subgroup Positive
+        weights += (( (train['target'].values<0.5).astype(bool).astype(np.int) +
+           (train[identity_columns].fillna(0).values>=0.5).sum(axis=1).astype(bool).astype(np.int) ) > 1 ).astype(bool).astype(np.int) / 4
+        loss_weight = 1.0 / weights.mean()
+        
+        del train
+        gc.collect()
+        
+        return weights, loss_weight
 
 
 class r_lgb_model(object):
@@ -278,19 +299,30 @@ class r_lgb_model(object):
         self.lgb_model = lgb.LGBMClassifier(**self.params)
 
         self. model_list = [0] * self.k
+        
+    def custom_loss(self, y_pred, y_true):
+#        ba = balanced_accuracy_score(np.where(y_true >= 0.5, 1, 0), np.where(y_pred >= 0.5, 1, 0))
+        rs = recall_score(np.where(y_true >= 0.5, 1, 0), np.where(y_pred >= 0.5, 1, 0))
+#        rauc = roc_auc_score(y_true, y_pred)
+        return 'custom loss', 1/np.e**(np.log(rs)**2), True
 
-    def _fit(self, X, y, verbose, esr):
+    def _fit(self, X, y, verbose, esr, weights):
         
         X_train, X_test, y_train, y_test = train_test_split(X, y,
                                                             test_size=0.2,
                                                             random_state=42)
         
+        we, _, _, _ = train_test_split(weights, weights,
+                                       test_size=0.2,
+                                       random_state=42)
+        
         self.lgb_model.fit(X_train,
                            y_train,
+                           sample_weight = we,
                            eval_set=[(X_test, y_test)],
                            verbose=verbose,
                            early_stopping_rounds=esr,
-                        #   eval_metric=new_auc
+                           eval_metric=self.custom_loss
                           )
         
         self.ft_importances = self.lgb_model.feature_importances_
@@ -307,7 +339,7 @@ if __name__ == '__main__':
         'learning_rate': 0.1,
     #        'num_leaves': 75,
         'colsample_bytree': 0.4,
-        "is_unbalance": True,
+#        "is_unbalance": True,
         'objective': 'xentropy',
 #        'scale_pos_weight': 13,
 #        'max_bin': 64,
@@ -322,14 +354,21 @@ if __name__ == '__main__':
     EARLY_STOPPING_ROUNDS = 50
     FT_SEL = False
     
+    PATH = '../data/'
+    
     print('\n### TFIDF ###')          
     print('\n| Data processing...\n')
-    data = r_data(MAX_LEN, vec='tfidf')
+    data = r_data(MAX_LEN, vec='tfidf', aug=False)
     
     print('\t- Reading data...')
-    train = data.read_data('../data/train.csv')\
+    train = data.read_data(PATH+'train.csv')\
          .sample(50000, random_state=42).reset_index(drop=True)
-    test = data.read_data('../data/test.csv', tr=False)
+    test = data.read_data(PATH+'test.csv', tr=False)
+    
+    print('\t- Computing weights...')
+    weights, loss_weight = data.get_weights(PATH+'train.csv')
+    weights = pd.Series(weights)\
+        .sample(50000, random_state=42).reset_index(drop=True)
     
     print('\t- Cleaning data...')
     #    train = data.clean_text(train)
@@ -344,9 +383,9 @@ if __name__ == '__main__':
     
     print('\t- Generating final datasets...')
     X_cols = ['ast', 'ex', 'qu', 'ar', 'ha', 'len_pr',
-           'num_words', 'len_max_word', 'len_min_word', 'num_bad_words',
-           'num_good_words', 'bad_ratio', 'good_ratio', 'bad_p_good', 'bad_m_good',
-           'ratio_max_len', 'num_upper', "num_lower", 'num_unique_words', 'words_vs_unique',
+           'num_words', 'len_max_word', 'len_min_word',
+           'bad_ratio', 'good_ratio', 'bad_p_good', 'bad_m_good',
+           'ratio_max_len', 'words_vs_unique',
            'words_vs_upper', 'words_vs_lower', 'num_smilies']
     
     y_train = np.where(train['target'] >= 0.5, 1, 0)
@@ -364,7 +403,7 @@ if __name__ == '__main__':
     print('\n\n| Modeling...\n')
     model = r_lgb_model(k, params)
     print('\t- Fitting...')
-    model._fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS)
+    model._fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS, weights)
     
     if FT_SEL:
     
@@ -408,7 +447,7 @@ if __name__ == '__main__':
     del model
     gc.collect()
 
-    print('\n| Saving submission...')
-    submission = pd.read_csv('../data/sample_submission.csv')
-    submission["prediction"] = preds_tdidf
-    submission.to_csv("submission.csv", index=False)
+#    print('\n| Saving submission...')
+#    submission = pd.read_csv(PATH+'sample_submission.csv')
+#    submission["prediction"] = preds_tdidf
+#    submission.to_csv("submission.csv", index=False)
