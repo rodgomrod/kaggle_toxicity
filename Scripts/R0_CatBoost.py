@@ -1,13 +1,12 @@
 import numpy as np
 import pandas as pd
 from nltk.corpus import stopwords
-#from nltk.stem.porter import PorterStemmer
 from sklearn.model_selection import StratifiedKFold
 from sklearn.feature_extraction.text import HashingVectorizer, TfidfVectorizer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import balanced_accuracy_score, recall_score, roc_auc_score
 from scipy.sparse import hstack, csr_matrix, vstack
-import lightgbm as lgb
+from catboost import CatBoostClassifier
 import gc
 import re
 from multiprocessing import Pool
@@ -132,7 +131,6 @@ class r_data(object):
         self.STOP_WORDS = list(stopwords.words('english'))
         self.num_partitions = psutil.cpu_count() * 8
         self.num_cores = psutil.cpu_count()
-#        self.stemmer = PorterStemmer()
         self.aug = aug
         
         if vec == 'hash':
@@ -229,21 +227,14 @@ class r_data(object):
         
         df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([i for i in x if not i.isdigit()]))
         df["comment_text"] = df["comment_text"].apply(lambda x: c_t2(x))
-#        df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([x_[1:] if x_.startswith("'") else x_ for x_ in x]))
         df["comment_text"] = df["comment_text"].apply(lambda x: remove_stop_words(x, self.STOP_WORDS))
         df["comment_text"] = df["comment_text"].apply(lambda x: remove_noise_chars(x, self.CHARS_TO_REMOVE))
-#        df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([self.stemmer.stem(word) for word in x.split()]))
-        
-#        df["len_pr_after"] = df["comment_text"].apply(lambda x: len(x))
-#        df["num_words_after"] = df["comment_text"].apply(lambda x: len(x.split()))
         
         df["num_bad_words"] = df["comment_text"].apply(lambda x: len([word for word in x.split() if word in self.arrBad]))
         df["num_good_words"] = df["comment_text"].apply(lambda x: len([word for word in x.split() if word in self.arrGood]))
-#        df['len_pr_ratio'] = df.len_pr_after / df.len_pr
-#        df['num_words_ratio'] = df.num_words_after / df.num_words
+        
         df['bad_ratio'] = df.num_bad_words / df.num_words
         df['good_ratio'] = df.num_good_words / df.num_words
-        
         df['bad_p_good'] = df.num_bad_words + df.num_good_words
         df['bad_m_good'] = df.num_bad_words - df.num_good_words
         df['ratio_max_len'] = df.len_max_word / df.len_pr
@@ -264,9 +255,7 @@ class r_data(object):
 
     def final_X(self, X_words, data_extra):
 
-#        X = pd.concat([X_words, data_extra], axis=1)
         X = np.concatenate((X_words, data_extra), axis = 1)
-
         return X
     
     def get_weights(self, path):
@@ -275,19 +264,12 @@ class r_data(object):
             'muslim', 'black', 'white', 'psychiatric_or_mental_illness', 'target']
         
         train = pd.read_csv(path, usecols=identity_columns).fillna(0)
-        weights = np.zeros((len(train),))
-        weights += (train[identity_columns].values>=0.5).sum(axis=1).astype(bool).astype(np.int)
-        
-#        # Overall
-#        weights = np.ones((len(train),)) / 4
-#        # Subgroup
-#        weights += (train[identity_columns].values>=0.5).sum(axis=1).astype(bool).astype(np.int) / 4
-#        # Background Positive, Subgroup Negative
-#        weights += (( (train['target'].values>=0.5).astype(bool).astype(np.int) +
-#           (train[identity_columns].fillna(0).values<0.5).sum(axis=1).astype(bool).astype(np.int) ) > 1 ).astype(bool).astype(np.int) / 4
-#        # Background Negative, Subgroup Positive
-#        weights += (( (train['target'].values<0.5).astype(bool).astype(np.int) +
-#           (train[identity_columns].fillna(0).values>=0.5).sum(axis=1).astype(bool).astype(np.int) ) > 1 ).astype(bool).astype(np.int) / 4
+        weights = np.ones((len(train),)) / 4
+        weights += (train[identity_columns].values>=0.5).sum(axis=1).astype(bool).astype(np.int) / 4
+        weights += (( (train['target'].values>=0.5).astype(bool).astype(np.int) +
+           (train[identity_columns].fillna(0).values<0.5).sum(axis=1).astype(bool).astype(np.int) ) > 1 ).astype(bool).astype(np.int) / 4
+        weights += (( (train['target'].values<0.5).astype(bool).astype(np.int) +
+           (train[identity_columns].fillna(0).values>=0.5).sum(axis=1).astype(bool).astype(np.int) ) > 1 ).astype(bool).astype(np.int) / 4
         loss_weight = 1.0 / weights.mean()
         
         del train
@@ -296,7 +278,7 @@ class r_data(object):
         return weights, loss_weight
 
 
-class r_lgb_model(object):
+class r_cb_model(object):
 
     def __init__(self, k, params):
 
@@ -304,7 +286,7 @@ class r_lgb_model(object):
         self.skf = StratifiedKFold(n_splits=self.k, shuffle=True, random_state=42)
 
         self.params = params
-        self.lgb_model = lgb.LGBMClassifier(**self.params)
+        self.cb_model = CatBoostClassifier(**params)
 
         self. model_list = [0] * self.k
         
@@ -325,44 +307,37 @@ class r_lgb_model(object):
                                        random_state=42)
         
         
-        self.lgb_model.fit(X_train,
+        self.cb_model.fit(X_train.toarray(),
                            y_train,
 #                           sample_weight = we,
-                           eval_set=[(X_test, y_test)],
+                           eval_set=(X_test.toarray(), y_test),
                            verbose=verbose,
                            early_stopping_rounds=esr,
 #                           eval_metric=self.custom_loss
                           )
         
-        self.ft_importances = self.lgb_model.feature_importances_
 
 if __name__ == '__main__':
 
 
-    MAX_LEN = 400000
+    MAX_LEN = 500
     k = 3
-    params = {
-        'max_depth': -1,
-        'metric': 'auc',
-        'n_estimators': 20000,
-        'learning_rate': 0.1,
-#        'num_leaves': 30,
-#        'min_data_in_leaf': 20,
-        'colsample_bytree': 0.4,
-#        "is_unbalance": True,
-        'objective': 'xentropy',
-#        'scale_pos_weight': 7,
-#        'max_bin': 512,
-#        'objective': 'regression',
-        'n_jobs': -1,
-        'seed': 42,
-        'bagging_fraction': 0.3,
-        'lambda_l1': 0,
-        'lambda_l2': 0,
-    }
-    verbose = 50
+    params={'depth':13,
+            'iterations':1000,
+            'eval_metric':'AUC',
+            'random_seed':42,
+            'logging_level':'Verbose',
+            'allow_writing_files':False,
+            'early_stopping_rounds':50,
+            'learning_rate':0.1,
+            'thread_count':psutil.cpu_count(),
+            'boosting_type':'Plain',
+            'bootstrap_type':'Bernoulli',
+            'rsm':0.3}
+
+    verbose = 5
     EARLY_STOPPING_ROUNDS = 50
-    FT_SEL = False
+    FT_SEL = True
     
     PATH = '../data/'
     
@@ -372,17 +347,15 @@ if __name__ == '__main__':
     
     print('\t- Reading data...')
     train = data.read_data(PATH+'train.csv')\
-         .sample(100000, random_state=42).reset_index(drop=True)
+         .sample(50000, random_state=42).reset_index(drop=True)
     test = data.read_data(PATH+'test.csv', tr=False)
     
     print('\t- Computing weights...')
     weights, loss_weight = data.get_weights(PATH+'train.csv')
     weights = pd.Series(weights)\
-        .sample(100000, random_state=42).reset_index(drop=True)
+        .sample(50000, random_state=42).reset_index(drop=True)
     
     print('\t- Cleaning data...')
-    #    train = data.clean_text(train)
-    #    test = data.clean_text(test)
     train = data.df_parallelize_run(train, data.clean_text).reset_index(drop=True)
     test = data.df_parallelize_run(test, data.clean_text).reset_index(drop=True)
     
@@ -399,7 +372,6 @@ if __name__ == '__main__':
            'words_vs_upper', 'words_vs_lower', 'num_smilies']
     
     y_train = np.where(train['target'] >= 0.5, 1, 0)
-#    y_train = train['target']
     extra_data = csr_matrix(train[X_cols])
     del train
     gc.collect()
@@ -411,42 +383,26 @@ if __name__ == '__main__':
     gc.collect()      
     
     print('\n\n| Modeling...\n')
-    model = r_lgb_model(k, params)
+    model = r_cb_model(k, params)
     print('\t- Fitting...')
     model._fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS, weights)
     
     if FT_SEL:
     
         df_imp = pd.DataFrame({'feature': [i for i in range(X_train.shape[1])],
-                               'importance': model.lgb_model.feature_importances_})\
+                               'importance': model.cb_model.feature_importances_})\
                 .sort_values('importance', ascending = False)
                 
-#        X_train_sel = X_train[:, df_imp[df_imp.importance > 3].feature.tolist()]
-#        weights_sel = weights[df_imp[df_imp.importance > 3].feature.tolist()]
-        X_train_sel = X_train[:, df_imp.feature[:1000].tolist()]
-        
-        params = {
-        'max_depth': -1,
-        'metric': 'auc',
-        'n_estimators': 20000,
-        'learning_rate': 0.1,
-        'colsample_bytree': 1,
-        'objective': 'xentropy',
-        'n_jobs': -1,
-        'seed': 42,
-        'bagging_fraction': 0.3,
-        'lambda_l1': 0,
-        'lambda_l2': 0,
-    }
+        X_train_sel = X_train[:, df_imp.feature[:10000].tolist()]
         
         print('\n\n| Modeling with FT Selection...\n')
-        model = r_lgb_model(k, params)
+        model = r_cb_model(k, params)
         print('\t- Fitting...')
         model._fit(X_train_sel, y_train, verbose, EARLY_STOPPING_ROUNDS, weights)
-        del X_train_sel
     
     del X_train
     del y_train
+    del X_train_sel
     gc.collect()
     
     
@@ -464,10 +420,10 @@ if __name__ == '__main__':
     gc.collect()
     
     if FT_SEL:
-        X_test = X_test[:, df_imp.feature[:1000].tolist()]
+        X_test = X_test[:, df_imp.feature[:10000].tolist()]
         
     print('\t- Making predictions...')
-    preds_tdidf = model.lgb_model.predict_proba(X_test)[:,1]
+    preds_tdidf = model.cb_model.predict_proba(X_test.toarray())[:,1]
     
     del X_test
     del data
@@ -475,9 +431,7 @@ if __name__ == '__main__':
     gc.collect()
 
     print('\n| Saving submission...')
-#    submission = pd.read_csv(PATH+'sample_submission.csv')
     submission = pd.DataFrame({'id': test['id'], 'prediction': preds_tdidf})
-#    submission["prediction"] = preds_tdidf
     submission.to_csv("submission.csv", index=False)
 
 

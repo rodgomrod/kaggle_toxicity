@@ -5,8 +5,9 @@ from nltk.corpus import stopwords
 from sklearn.model_selection import StratifiedKFold
 from sklearn.feature_extraction.text import HashingVectorizer, TfidfVectorizer
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import balanced_accuracy_score, recall_score, roc_auc_score
+from sklearn.metrics import precision_recall_curve, auc
 from scipy.sparse import hstack, csr_matrix, vstack
+from sklearn.tree import DecisionTreeClassifier
 import lightgbm as lgb
 import gc
 import re
@@ -134,6 +135,9 @@ class r_data(object):
         self.num_cores = psutil.cpu_count()
 #        self.stemmer = PorterStemmer()
         self.aug = aug
+        self.identity_columns = [
+            'male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish',
+            'muslim', 'black', 'white', 'psychiatric_or_mental_illness', 'target']
         
         if vec == 'hash':
             self.vectorizer = HashingVectorizer(n_features=self.MAX_LEN,
@@ -229,10 +233,8 @@ class r_data(object):
         
         df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([i for i in x if not i.isdigit()]))
         df["comment_text"] = df["comment_text"].apply(lambda x: c_t2(x))
-#        df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([x_[1:] if x_.startswith("'") else x_ for x_ in x]))
         df["comment_text"] = df["comment_text"].apply(lambda x: remove_stop_words(x, self.STOP_WORDS))
         df["comment_text"] = df["comment_text"].apply(lambda x: remove_noise_chars(x, self.CHARS_TO_REMOVE))
-#        df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([self.stemmer.stem(word) for word in x.split()]))
         
 #        df["len_pr_after"] = df["comment_text"].apply(lambda x: len(x))
 #        df["num_words_after"] = df["comment_text"].apply(lambda x: len(x.split()))
@@ -270,13 +272,10 @@ class r_data(object):
         return X
     
     def get_weights(self, path):
-        identity_columns = [
-            'male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish',
-            'muslim', 'black', 'white', 'psychiatric_or_mental_illness', 'target']
         
-        train = pd.read_csv(path, usecols=identity_columns).fillna(0)
+        train = pd.read_csv(path, usecols=self.identity_columns).fillna(0)
         weights = np.zeros((len(train),))
-        weights += (train[identity_columns].values>=0.5).sum(axis=1).astype(bool).astype(np.int)
+        weights += (train[self.identity_columns].values>=0.5).sum(axis=1).astype(bool).astype(np.int)
         
 #        # Overall
 #        weights = np.ones((len(train),)) / 4
@@ -309,32 +308,27 @@ class r_lgb_model(object):
         self. model_list = [0] * self.k
         
     def custom_loss(self, y_pred, y_true):
-#        ba = balanced_accuracy_score(np.where(y_true >= 0.5, 1, 0), np.where(y_pred >= 0.5, 1, 0))
-        rs = recall_score(np.where(y_true >= 0.5, 1, 0), np.where(y_pred >= 0.5, 1, 0))
-#        rauc = roc_auc_score(y_true, y_pred)
-        return 'custom loss', 1/np.e**(np.log(rs)**2), True
+        precision, recall, thresholds = precision_recall_curve(np.where(y_true >= 0.5, 1, 0), y_pred)
+        AUC = auc(recall, precision)
+        if AUC != AUC:
+            AUC = 0
+        return 'PR_AUC', AUC, True
 
-    def _fit(self, X, y, verbose, esr, weights):
+    def _fit(self, X, y, verbose, esr):
         
         X_train, X_test, y_train, y_test = train_test_split(X, y,
                                                             test_size=0.2,
                                                             random_state=42)
         
-        we, _, _, _ = train_test_split(weights, weights,
-                                       test_size=0.2,
-                                       random_state=42)
-        
         
         self.lgb_model.fit(X_train,
                            y_train,
-#                           sample_weight = we,
                            eval_set=[(X_test, y_test)],
                            verbose=verbose,
                            early_stopping_rounds=esr,
-#                           eval_metric=self.custom_loss
+                           eval_metric=self.custom_loss
                           )
         
-        self.ft_importances = self.lgb_model.feature_importances_
 
 if __name__ == '__main__':
 
@@ -343,7 +337,7 @@ if __name__ == '__main__':
     k = 3
     params = {
         'max_depth': -1,
-        'metric': 'auc',
+#        'metric': 'auc',
         'n_estimators': 20000,
         'learning_rate': 0.1,
 #        'num_leaves': 30,
@@ -372,13 +366,8 @@ if __name__ == '__main__':
     
     print('\t- Reading data...')
     train = data.read_data(PATH+'train.csv')\
-         .sample(100000, random_state=42).reset_index(drop=True)
+         .sample(50000, random_state=42).reset_index(drop=True)
     test = data.read_data(PATH+'test.csv', tr=False)
-    
-    print('\t- Computing weights...')
-    weights, loss_weight = data.get_weights(PATH+'train.csv')
-    weights = pd.Series(weights)\
-        .sample(100000, random_state=42).reset_index(drop=True)
     
     print('\t- Cleaning data...')
     #    train = data.clean_text(train)
@@ -413,7 +402,7 @@ if __name__ == '__main__':
     print('\n\n| Modeling...\n')
     model = r_lgb_model(k, params)
     print('\t- Fitting...')
-    model._fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS, weights)
+    model._fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS)
     
     if FT_SEL:
     
@@ -442,7 +431,7 @@ if __name__ == '__main__':
         print('\n\n| Modeling with FT Selection...\n')
         model = r_lgb_model(k, params)
         print('\t- Fitting...')
-        model._fit(X_train_sel, y_train, verbose, EARLY_STOPPING_ROUNDS, weights)
+        model._fit(X_train_sel, y_train, verbose, EARLY_STOPPING_ROUNDS)
         del X_train_sel
     
     del X_train

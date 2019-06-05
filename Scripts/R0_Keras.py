@@ -7,7 +7,12 @@ from sklearn.feature_extraction.text import HashingVectorizer, TfidfVectorizer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import balanced_accuracy_score, recall_score, roc_auc_score
 from scipy.sparse import hstack, csr_matrix, vstack
-import lightgbm as lgb
+from keras.models import Sequential
+from keras.layers import Dense, Dropout
+from keras.wrappers.scikit_learn import KerasClassifier
+from keras.callbacks import EarlyStopping
+from keras.optimizers import SGD
+import tensorflow as tf
 import gc
 import re
 from multiprocessing import Pool
@@ -304,37 +309,68 @@ class r_lgb_model(object):
         self.skf = StratifiedKFold(n_splits=self.k, shuffle=True, random_state=42)
 
         self.params = params
-        self.lgb_model = lgb.LGBMClassifier(**self.params)
 
         self. model_list = [0] * self.k
+        
+    def auroc(self, y_true, y_pred):
+        return tf.py_func(roc_auc_score, (y_true, y_pred), tf.double)
         
     def custom_loss(self, y_pred, y_true):
 #        ba = balanced_accuracy_score(np.where(y_true >= 0.5, 1, 0), np.where(y_pred >= 0.5, 1, 0))
         rs = recall_score(np.where(y_true >= 0.5, 1, 0), np.where(y_pred >= 0.5, 1, 0))
 #        rauc = roc_auc_score(y_true, y_pred)
         return 'custom loss', 1/np.e**(np.log(rs)**2), True
+    
+    def create_baseline(self):
+        model = Sequential()
+        model.add(Dense(64, input_dim=self.dim, kernel_initializer='normal', activation='relu'))
+        model.add(Dropout(0.2))
+        model.add(Dense(256, kernel_initializer='normal', activation='relu'))
+    #     model.add(Dense(1024, kernel_initializer='normal', activation='relu'))
+    #     model.add(Dense(512, kernel_initializer='normal', activation='relu'))
+        model.add(Dense(1, kernel_initializer='normal', activation='sigmoid'))
+        model.compile(loss='binary_crossentropy', optimizer='adam',metrics=[self.auroc])
+        return model
 
     def _fit(self, X, y, verbose, esr, weights):
         
-        X_train, X_test, y_train, y_test = train_test_split(X, y,
-                                                            test_size=0.2,
-                                                            random_state=42)
+#        X_train, X_test, y_train, y_test = train_test_split(X, y,
+#                                                            test_size=0.2,
+#                                                            random_state=42)
+#        
+#        we, _, _, _ = train_test_split(weights, weights,
+#                                       test_size=0.2,
+#                                       random_state=42)
         
-        we, _, _, _ = train_test_split(weights, weights,
-                                       test_size=0.2,
-                                       random_state=42)
+        self.dim = X.shape[1]
         
         
-        self.lgb_model.fit(X_train,
-                           y_train,
-#                           sample_weight = we,
-                           eval_set=[(X_test, y_test)],
-                           verbose=verbose,
-                           early_stopping_rounds=esr,
-#                           eval_metric=self.custom_loss
-                          )
+        callbacks = [EarlyStopping(monitor='val_auroc',
+                           min_delta=0.0,
+                           patience=1,
+                           verbose=0,
+                           mode='max',
+                           restore_best_weights=True)]
+            
+        self.lgb_model = KerasClassifier(build_fn=self.create_baseline,
+                                    epochs=30, batch_size=1024,
+                                    verbose=1, validation_split=0.20,
+                                    callbacks=callbacks)
         
-        self.ft_importances = self.lgb_model.feature_importances_
+#        model = self.create_baseline(X_train.shape[1])
+        self.lgb_model.fit(X_train, y_train)
+        
+        
+#        self.lgb_model.fit(X_train,
+#                           y_train,
+##                           sample_weight = we,
+#                           eval_set=[(X_test, y_test)],
+#                           verbose=verbose,
+#                           early_stopping_rounds=esr,
+##                           eval_metric=self.custom_loss
+#                          )
+#        
+#        self.ft_importances = self.lgb_model.feature_importances_
 
 if __name__ == '__main__':
 
