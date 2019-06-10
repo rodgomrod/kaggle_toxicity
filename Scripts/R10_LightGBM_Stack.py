@@ -57,7 +57,7 @@ def read_data(path, tr=True, n_rows=None):
             df_aug = shuffler(df_ini)
             df = pd.concat([df_ini, df_aug])
         else:
-            df = pd.read_csv(path, usecols=['comment_text', 'target']+identity_columns)#.fillna(' ')
+            df = pd.read_csv(path, usecols=['comment_text']+identity_columns)#.fillna(' ')
         return df
     else:
         return pd.read_csv(path, usecols=['comment_text', 'id']).fillna(' ')
@@ -74,38 +74,37 @@ def df_parallelize_run(df, func, vector=False):
     pool.join()
     return df
 
+    
+def remove_stop_words(text, sw):
+    text = ' '.join([word for word in text.split() if word not in sw])
+    return text
+
+def remove_noise_chars(text, chars):
+    text = ''.join([word for word in text if word not in chars])
+    return text
+
+def c_t2(text):
+    text = text.lower()
+    text = re.sub(r"what's", "what is ", text)
+    text = re.sub(r"\'s", " ", text)
+    text = re.sub(r"\'ve", " have ", text)
+    text = re.sub(r"can't", "cannot ", text)
+    text = re.sub(r"n't", " not ", text)
+    text = re.sub(r"i'm", "i am ", text)
+    text = re.sub(r"\'re", " are ", text)
+    text = re.sub(r"\'d", " would ", text)
+    text = re.sub(r"\'ll", " will ", text)
+    text = re.sub(r"\'scuse", " excuse ", text)
+    text = re.sub('\W', ' ', text)
+    text = re.sub('\s+', ' ', text)
+    text = re.sub(r"\\", "", text)    
+    text = re.sub(r"\'", "", text)    
+    text = re.sub(r"\"", "", text)
+    text = re.sub(r'<.*?>', '', text)
+    text = text.strip(' ')
+    return text
 
 def clean_text(df):
-    
-    def remove_stop_words(text, sw):
-        text = ' '.join([word for word in text.split() if word not in sw])
-        return text
-    
-    def remove_noise_chars(text, chars):
-        text = ''.join([word for word in text if word not in chars])
-        return text
-    
-    def c_t2(text):
-        text = text.lower()
-        text = re.sub(r"what's", "what is ", text)
-        text = re.sub(r"\'s", " ", text)
-        text = re.sub(r"\'ve", " have ", text)
-        text = re.sub(r"can't", "cannot ", text)
-        text = re.sub(r"n't", " not ", text)
-        text = re.sub(r"i'm", "i am ", text)
-        text = re.sub(r"\'re", " are ", text)
-        text = re.sub(r"\'d", " would ", text)
-        text = re.sub(r"\'ll", " will ", text)
-        text = re.sub(r"\'scuse", " excuse ", text)
-        text = re.sub('\W', ' ', text)
-        text = re.sub('\s+', ' ', text)
-        text = re.sub(r"\\", "", text)    
-        text = re.sub(r"\'", "", text)    
-        text = re.sub(r"\"", "", text)
-        text = re.sub(r'<.*?>', '', text)
-        text = text.strip(' ')
-        return text
-
             
     df["ast"] = df["comment_text"].apply(lambda x: x.count('*'))
     df["ex"] = df["comment_text"].apply(lambda x: x.count('!'))
@@ -137,6 +136,18 @@ def clean_text(df):
     df['ratio_max_len'] = df.len_max_word / df.len_pr
 
     return df
+
+def clean_text_inverse(df):
+    
+    df["comment_text"] = df["comment_text"].fillna(' ')
+    df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([i for i in x if not i.isdigit()]))
+    df["comment_text"] = df["comment_text"].apply(lambda x: c_t2(x))
+    df["comment_text"] = df["comment_text"].apply(lambda x: remove_noise_chars(x, CHARS_TO_REMOVE))
+    df["comment_text"] = df["comment_text"].apply(lambda x: ''.join(''.join(s)[:1] for _, s in itertools.groupby(x)))
+    df["comment_text"] = df["comment_text"].apply(lambda x: ' '.join(x.split()[::-1]))
+
+    return df
+
 
 def vector(text_data, train=True, to_dataframe=False):
 
@@ -184,7 +195,7 @@ def _fit(X, y, verbose, esr):
                        eval_set=[(X_test, y_test)],
                        verbose=verbose,
                        early_stopping_rounds=esr,
-                    #   eval_metric=custom_loss
+                       eval_metric=custom_loss
                       )
     
 def _re_fit(X, y, verbose, n_e):
@@ -201,22 +212,18 @@ FT_SEL = False
 k = 3
 skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
 params = {
-        'max_depth': 21,
-        'metric': 'auc',
-        'n_estimators': 20000,
-        'learning_rate': 0.1,
-#        'num_leaves': 30,
-#        'min_data_in_leaf': 20,
-        'colsample_bytree': 0.3,
-#        "is_unbalance": True,
-        'objective': 'xentropy',
-#         'scale_pos_weight': 10,
-        'n_jobs': -1,
-        'seed': 42,
-        'bagging_fraction': 0.3,
-        'lambda_l1': 0,
-        'lambda_l2': 0,
-    }
+    'max_depth': 21,
+    'metric': 'auc',
+    'n_estimators': 20000,
+    'learning_rate': 0.1,
+    'colsample_bytree': 0.4,
+    'objective': 'xentropy',
+    'n_jobs': -1,
+    'seed': 42,
+    'bagging_fraction': 0.3,
+    'lambda_l1': 0,
+    'lambda_l2': 0,
+}
 lgb_model = lgb.LGBMClassifier(**params)
 PATH = '../data/'
 BALANCE_TRAIN = True
@@ -229,12 +236,7 @@ train = read_data(PATH+'train.csv')\
       .sample(50000, random_state=42).reset_index(drop=True)
 test = read_data(PATH+'test.csv', tr=False)
 
-if BALANCE_TRAIN:
-    train_uno = train[train.target >= 0.5].reset_index(drop=True)
-    train_cero = train[train.target < 0.5].sample(train_uno.shape[0], random_state=42)\
-            .reset_index(drop=True)
-    train = pd.concat([train_uno, train_cero])
-    train = train.sample(frac=1, random_state=42).reset_index(drop=True)
+train_rows = train.shape[0]
 
 print('\t- Cleaning data...')
 train_cleaned = df_parallelize_run(train, clean_text).reset_index(drop=True)
@@ -267,18 +269,24 @@ del X_words_test
 del extra_data
 gc.collect()
 
-preds_dict = dict()
-#    for target in data.identity_columns:
-target = 'target'
-#for target in ['target']:
-#    for i in range(5, 15):
-#        print(i)
+preds_dict1 = dict()
+preds_dict2 = dict()
+for target in identity_columns:
+#target = 'target'
+    
+    print(f'\n\n| Modeling with target = {target}...\n')
+    print('\t- Fitting...')
+    
+    y_train = np.where(train[target].fillna(0) >= 0.5, 1, 0)
 
-y_train = np.where(train[target].fillna(0) >= 0.5, 1, 0)
-
-print(f'\n\n| Modeling with target = {target}...\n')
-print('\t- Fitting...')
-_fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS)
+    _fit(X_train[:train_rows//2], y_train[:train_rows//2], verbose, EARLY_STOPPING_ROUNDS)
+    
+    preds_tdidf = lgb_model.predict_proba(X_test)[:,1]
+    preds_dict1[target] = preds_tdidf
+    
+preds_df = csr_matrix(pd.concat([pd.DataFrame(preds_dict1), pd.DataFrame(preds_dict2)], axis=1))
+gc.collect()
+X_train = hstack([X_train, preds_df]).tocsr()
 
 #print('\t- Re-Fitting with all data...')
 #_re_fit(X_train, y_train, verbose, int(lgb_model.best_iteration_*1.3))

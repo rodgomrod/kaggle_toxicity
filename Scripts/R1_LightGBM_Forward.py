@@ -33,13 +33,13 @@ identity_columns = [
             'muslim', 'black', 'white', 'psychiatric_or_mental_illness', 'target']
 
 vectorizer = TfidfVectorizer(ngram_range=(1,2),
-                                              min_df=3, max_df=0.3,
-                                              strip_accents='unicode',
-                                              use_idf=1,
-                                              smooth_idf=1,
-                                              sublinear_tf=1,
-                                              max_features=MAX_LEN,
-                                              lowercase=False)
+                          min_df=3, max_df=0.3,
+                          strip_accents='unicode',
+                          use_idf=1,
+                          smooth_idf=1,
+                          sublinear_tf=1,
+                          max_features=MAX_LEN,
+                          lowercase=False)
 
 def shuffler(df, n=50000):
     
@@ -57,7 +57,7 @@ def read_data(path, tr=True, n_rows=None):
             df_aug = shuffler(df_ini)
             df = pd.concat([df_ini, df_aug])
         else:
-            df = pd.read_csv(path, usecols=['comment_text', 'target']+identity_columns)#.fillna(' ')
+            df = pd.read_csv(path, usecols=['comment_text']+identity_columns)#.fillna(' ')
         return df
     else:
         return pd.read_csv(path, usecols=['comment_text', 'id']).fillna(' ')
@@ -74,38 +74,49 @@ def df_parallelize_run(df, func, vector=False):
     pool.join()
     return df
 
+def df_parallelize_run(df, func, vector=False):
+
+    df_split = np.array_split(df, num_partitions)
+    pool = Pool(num_cores)
+    if vector:
+        df = vstack(pool.map(func, df_split), format='csr')
+    else:
+        df = pd.concat(pool.map(func, df_split))
+    pool.close()
+    pool.join()
+    return df
+
+    
+def remove_stop_words(text, sw):
+    text = ' '.join([word for word in text.split() if word not in sw])
+    return text
+
+def remove_noise_chars(text, chars):
+    text = ''.join([word for word in text if word not in chars])
+    return text
+
+def c_t2(text):
+    text = text.lower()
+    text = re.sub(r"what's", "what is ", text)
+    text = re.sub(r"\'s", " ", text)
+    text = re.sub(r"\'ve", " have ", text)
+    text = re.sub(r"can't", "cannot ", text)
+    text = re.sub(r"n't", " not ", text)
+    text = re.sub(r"i'm", "i am ", text)
+    text = re.sub(r"\'re", " are ", text)
+    text = re.sub(r"\'d", " would ", text)
+    text = re.sub(r"\'ll", " will ", text)
+    text = re.sub(r"\'scuse", " excuse ", text)
+    text = re.sub('\W', ' ', text)
+    text = re.sub('\s+', ' ', text)
+    text = re.sub(r"\\", "", text)    
+    text = re.sub(r"\'", "", text)    
+    text = re.sub(r"\"", "", text)
+    text = re.sub(r'<.*?>', '', text)
+    text = text.strip(' ')
+    return text
 
 def clean_text(df):
-    
-    def remove_stop_words(text, sw):
-        text = ' '.join([word for word in text.split() if word not in sw])
-        return text
-    
-    def remove_noise_chars(text, chars):
-        text = ''.join([word for word in text if word not in chars])
-        return text
-    
-    def c_t2(text):
-        text = text.lower()
-        text = re.sub(r"what's", "what is ", text)
-        text = re.sub(r"\'s", " ", text)
-        text = re.sub(r"\'ve", " have ", text)
-        text = re.sub(r"can't", "cannot ", text)
-        text = re.sub(r"n't", " not ", text)
-        text = re.sub(r"i'm", "i am ", text)
-        text = re.sub(r"\'re", " are ", text)
-        text = re.sub(r"\'d", " would ", text)
-        text = re.sub(r"\'ll", " will ", text)
-        text = re.sub(r"\'scuse", " excuse ", text)
-        text = re.sub('\W', ' ', text)
-        text = re.sub('\s+', ' ', text)
-        text = re.sub(r"\\", "", text)    
-        text = re.sub(r"\'", "", text)    
-        text = re.sub(r"\"", "", text)
-        text = re.sub(r'<.*?>', '', text)
-        text = text.strip(' ')
-        return text
-
             
     df["ast"] = df["comment_text"].apply(lambda x: x.count('*'))
     df["ex"] = df["comment_text"].apply(lambda x: x.count('!'))
@@ -137,6 +148,18 @@ def clean_text(df):
     df['ratio_max_len'] = df.len_max_word / df.len_pr
 
     return df
+
+def clean_text_inverse(df):
+    
+    df["comment_text"] = df["comment_text"].fillna(' ')
+    df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([i for i in x if not i.isdigit()]))
+    df["comment_text"] = df["comment_text"].apply(lambda x: c_t2(x))
+    df["comment_text"] = df["comment_text"].apply(lambda x: remove_noise_chars(x, CHARS_TO_REMOVE))
+    df["comment_text"] = df["comment_text"].apply(lambda x: ''.join(''.join(s)[:1] for _, s in itertools.groupby(x)))
+    df["comment_text"] = df["comment_text"].apply(lambda x: ' '.join(x.split()[::-1]))
+
+    return df
+
 
 def vector(text_data, train=True, to_dataframe=False):
 
@@ -184,7 +207,7 @@ def _fit(X, y, verbose, esr):
                        eval_set=[(X_test, y_test)],
                        verbose=verbose,
                        early_stopping_rounds=esr,
-                    #   eval_metric=custom_loss
+                       eval_metric=custom_loss
                       )
     
 def _re_fit(X, y, verbose, n_e):
@@ -201,16 +224,12 @@ FT_SEL = False
 k = 3
 skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
 params = {
-        'max_depth': 21,
-        'metric': 'auc',
+        'max_depth': -1,
+#        'metric': 'auc',
         'n_estimators': 20000,
         'learning_rate': 0.1,
-#        'num_leaves': 30,
-#        'min_data_in_leaf': 20,
-        'colsample_bytree': 0.3,
-#        "is_unbalance": True,
+        'colsample_bytree': 0.4,
         'objective': 'xentropy',
-#         'scale_pos_weight': 10,
         'n_jobs': -1,
         'seed': 42,
         'bagging_fraction': 0.3,
@@ -219,7 +238,6 @@ params = {
     }
 lgb_model = lgb.LGBMClassifier(**params)
 PATH = '../data/'
-BALANCE_TRAIN = True
 
 
 print('\n### TFIDF ###')          
@@ -228,13 +246,6 @@ print('\t- Reading data...')
 train = read_data(PATH+'train.csv')\
       .sample(50000, random_state=42).reset_index(drop=True)
 test = read_data(PATH+'test.csv', tr=False)
-
-if BALANCE_TRAIN:
-    train_uno = train[train.target >= 0.5].reset_index(drop=True)
-    train_cero = train[train.target < 0.5].sample(train_uno.shape[0], random_state=42)\
-            .reset_index(drop=True)
-    train = pd.concat([train_uno, train_cero])
-    train = train.sample(frac=1, random_state=42).reset_index(drop=True)
 
 print('\t- Cleaning data...')
 train_cleaned = df_parallelize_run(train, clean_text).reset_index(drop=True)
@@ -255,24 +266,42 @@ X_cols = ['ast', 'ex', 'qu', 'ar', 'ha', 'len_pr', 'tw_ratio',
 extra_data = csr_matrix(train_cleaned[X_cols])
 #    del train
 gc.collect()
-X_train = hstack([X_words, extra_data]).tocsr()
+#X_train = hstack([X_words, extra_data]).tocsr()
+
+vectorizer = TfidfVectorizer(ngram_range=(2,2),
+                          min_df=3, max_df=0.3,
+                          strip_accents='unicode',
+                          use_idf=1,
+                          smooth_idf=1,
+                          sublinear_tf=1,
+                          max_features=int(MAX_LEN/4),
+                          lowercase=False)
+
+print('\t- Cleaning data (Inverse)...')
+train_cleaned_inverse = df_parallelize_run(train, clean_text_inverse).reset_index(drop=True)
+test_cleaned_inverse = df_parallelize_run(test, clean_text_inverse).reset_index(drop=True)
+
+print('\t- Vectorizer (Inverse)...')
+vector(pd.concat([train_cleaned_inverse['comment_text'], test_cleaned_inverse['comment_text']]))
+X_words_inverse = vector(train_cleaned_inverse['comment_text'].values, train=False)
+X_words_test_inverse = vector(test_cleaned_inverse['comment_text'].values, train=False)
+
+X_train = hstack([X_words, extra_data, X_words_inverse]).tocsr()
+
 
 del X_words
 del extra_data
 gc.collect()
 
 extra_data = csr_matrix(test_cleaned[X_cols])
-X_test = hstack([X_words_test, extra_data]).tocsr()
+#X_test = hstack([X_words_test, extra_data]).tocsr()
+X_test = hstack([X_words_test, extra_data, X_words_test_inverse]).tocsr()
 del X_words_test
 del extra_data
 gc.collect()
 
 preds_dict = dict()
-#    for target in data.identity_columns:
 target = 'target'
-#for target in ['target']:
-#    for i in range(5, 15):
-#        print(i)
 
 y_train = np.where(train[target].fillna(0) >= 0.5, 1, 0)
 
@@ -280,8 +309,8 @@ print(f'\n\n| Modeling with target = {target}...\n')
 print('\t- Fitting...')
 _fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS)
 
-#print('\t- Re-Fitting with all data...')
-#_re_fit(X_train, y_train, verbose, int(lgb_model.best_iteration_*1.3))
+print('\t- Re-Fitting with all data...')
+_re_fit(X_train, y_train, verbose, int(lgb_model.best_iteration_*1.3))
 
 print('\n| Predictions...\n')    
 print('\t- Making predictions...')
