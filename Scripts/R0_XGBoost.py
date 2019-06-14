@@ -7,7 +7,7 @@ from sklearn.feature_extraction.text import HashingVectorizer, TfidfVectorizer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import balanced_accuracy_score, recall_score, roc_auc_score
 from scipy.sparse import hstack, csr_matrix, vstack
-import lightgbm as lgb
+import xgboost as xgb
 import gc
 import re
 from multiprocessing import Pool
@@ -234,16 +234,11 @@ class r_data(object):
         df["comment_text"] = df["comment_text"].apply(lambda x: remove_noise_chars(x, self.CHARS_TO_REMOVE))
 #        df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([self.stemmer.stem(word) for word in x.split()]))
         
-#        df["len_pr_after"] = df["comment_text"].apply(lambda x: len(x))
-#        df["num_words_after"] = df["comment_text"].apply(lambda x: len(x.split()))
-        
         df["num_bad_words"] = df["comment_text"].apply(lambda x: len([word for word in x.split() if word in self.arrBad]))
         df["num_good_words"] = df["comment_text"].apply(lambda x: len([word for word in x.split() if word in self.arrGood]))
-#        df['len_pr_ratio'] = df.len_pr_after / df.len_pr
-#        df['num_words_ratio'] = df.num_words_after / df.num_words
+        
         df['bad_ratio'] = df.num_bad_words / df.num_words
         df['good_ratio'] = df.num_good_words / df.num_words
-        
         df['bad_p_good'] = df.num_bad_words + df.num_good_words
         df['bad_m_good'] = df.num_bad_words - df.num_good_words
         df['ratio_max_len'] = df.len_max_word / df.len_pr
@@ -275,19 +270,16 @@ class r_data(object):
             'muslim', 'black', 'white', 'psychiatric_or_mental_illness', 'target']
         
         train = pd.read_csv(path, usecols=identity_columns).fillna(0)
-        weights = np.zeros((len(train),))
-        weights += (train[identity_columns].values>=0.5).sum(axis=1).astype(bool).astype(np.int)
-        
-#        # Overall
-#        weights = np.ones((len(train),)) / 4
-#        # Subgroup
-#        weights += (train[identity_columns].values>=0.5).sum(axis=1).astype(bool).astype(np.int) / 4
-#        # Background Positive, Subgroup Negative
-#        weights += (( (train['target'].values>=0.5).astype(bool).astype(np.int) +
-#           (train[identity_columns].fillna(0).values<0.5).sum(axis=1).astype(bool).astype(np.int) ) > 1 ).astype(bool).astype(np.int) / 4
-#        # Background Negative, Subgroup Positive
-#        weights += (( (train['target'].values<0.5).astype(bool).astype(np.int) +
-#           (train[identity_columns].fillna(0).values>=0.5).sum(axis=1).astype(bool).astype(np.int) ) > 1 ).astype(bool).astype(np.int) / 4
+        # Overall
+        weights = np.ones((len(train),)) / 4
+        # Subgroup
+        weights += (train[identity_columns].values>=0.5).sum(axis=1).astype(bool).astype(np.int) / 4
+        # Background Positive, Subgroup Negative
+        weights += (( (train['target'].values>=0.5).astype(bool).astype(np.int) +
+           (train[identity_columns].fillna(0).values<0.5).sum(axis=1).astype(bool).astype(np.int) ) > 1 ).astype(bool).astype(np.int) / 4
+        # Background Negative, Subgroup Positive
+        weights += (( (train['target'].values<0.5).astype(bool).astype(np.int) +
+           (train[identity_columns].fillna(0).values>=0.5).sum(axis=1).astype(bool).astype(np.int) ) > 1 ).astype(bool).astype(np.int) / 4
         loss_weight = 1.0 / weights.mean()
         
         del train
@@ -296,7 +288,7 @@ class r_data(object):
         return weights, loss_weight
 
 
-class r_lgb_model(object):
+class r_xgb_model(object):
 
     def __init__(self, k, params):
 
@@ -304,7 +296,7 @@ class r_lgb_model(object):
         self.skf = StratifiedKFold(n_splits=self.k, shuffle=True, random_state=42)
 
         self.params = params
-        self.lgb_model = lgb.LGBMClassifier(**self.params)
+        self.xgb_model = xgb.XGBClassifier(**self.params)
 
         self. model_list = [0] * self.k
         
@@ -325,7 +317,7 @@ class r_lgb_model(object):
                                        random_state=42)
         
         
-        self.lgb_model.fit(X_train,
+        self.xgb_model.fit(X_train,
                            y_train,
 #                           sample_weight = we,
                            eval_set=[(X_test, y_test)],
@@ -334,35 +326,24 @@ class r_lgb_model(object):
 #                           eval_metric=self.custom_loss
                           )
         
-        self.ft_importances = self.lgb_model.feature_importances_
 
 if __name__ == '__main__':
 
 
-    MAX_LEN = 400000
+    MAX_LEN = 50000
     k = 3
-    params = {
-        'max_depth': -1,
-        'metric': 'auc',
-        'n_estimators': 20000,
-        'learning_rate': 0.1,
-#        'num_leaves': 30,
-#        'min_data_in_leaf': 20,
-        'colsample_bytree': 0.4,
-#        "is_unbalance": True,
-        'objective': 'xentropy',
-#        'scale_pos_weight': 7,
-#        'max_bin': 512,
-#        'objective': 'regression',
-        'n_jobs': -1,
-        'seed': 42,
-        'bagging_fraction': 0.3,
-        'lambda_l1': 0,
-        'lambda_l2': 0,
-    }
+    params={'max_depth':7,
+            'n_estimators':2000,
+            'colsample_bytree':0.2,
+            'learning_rate':0.1,
+            'objective':'binary:logistic',
+            'n_jobs':-1,
+            'eval_metric':'auc',
+            'random_state':42}
+
     verbose = 50
     EARLY_STOPPING_ROUNDS = 50
-    FT_SEL = False
+    FT_SEL = True
     
     PATH = '../data/'
     
@@ -411,42 +392,28 @@ if __name__ == '__main__':
     gc.collect()      
     
     print('\n\n| Modeling...\n')
-    model = r_lgb_model(k, params)
+    model = r_xgb_model(k, params)
     print('\t- Fitting...')
     model._fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS, weights)
     
     if FT_SEL:
     
         df_imp = pd.DataFrame({'feature': [i for i in range(X_train.shape[1])],
-                               'importance': model.lgb_model.feature_importances_})\
+                               'importance': model.xgb_model.feature_importances_})\
                 .sort_values('importance', ascending = False)
                 
 #        X_train_sel = X_train[:, df_imp[df_imp.importance > 3].feature.tolist()]
 #        weights_sel = weights[df_imp[df_imp.importance > 3].feature.tolist()]
-        X_train_sel = X_train[:, df_imp.feature[:1000].tolist()]
-        
-        params = {
-        'max_depth': -1,
-        'metric': 'auc',
-        'n_estimators': 20000,
-        'learning_rate': 0.1,
-        'colsample_bytree': 1,
-        'objective': 'xentropy',
-        'n_jobs': -1,
-        'seed': 42,
-        'bagging_fraction': 0.3,
-        'lambda_l1': 0,
-        'lambda_l2': 0,
-    }
+        X_train_sel = X_train[:, df_imp.feature[:10000].tolist()]
         
         print('\n\n| Modeling with FT Selection...\n')
-        model = r_lgb_model(k, params)
+        model = r_xgb_model(k, params)
         print('\t- Fitting...')
         model._fit(X_train_sel, y_train, verbose, EARLY_STOPPING_ROUNDS, weights)
-        del X_train_sel
     
     del X_train
     del y_train
+    del X_train_sel
     gc.collect()
     
     
@@ -464,10 +431,10 @@ if __name__ == '__main__':
     gc.collect()
     
     if FT_SEL:
-        X_test = X_test[:, df_imp.feature[:1000].tolist()]
+        X_test = X_test[:, df_imp.feature[:10000].tolist()]
         
     print('\t- Making predictions...')
-    preds_tdidf = model.lgb_model.predict_proba(X_test)[:,1]
+    preds_tdidf = model.xgb_model.predict_proba(X_test)[:,1]
     
     del X_test
     del data

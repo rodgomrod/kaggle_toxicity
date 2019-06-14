@@ -5,7 +5,9 @@ from nltk.corpus import stopwords
 from sklearn.model_selection import StratifiedKFold
 from sklearn.feature_extraction.text import HashingVectorizer, TfidfVectorizer
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import balanced_accuracy_score, recall_score, roc_auc_score
+from sklearn.metrics import precision_recall_curve, auc
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.decomposition import TruncatedSVD
 from scipy.sparse import hstack, csr_matrix, vstack
 import lightgbm as lgb
 import gc
@@ -16,6 +18,7 @@ import psutil
 import numpy as np
 import pandas as pd
 import random
+from textblob import TextBlob
 
 random.seed(42)
 
@@ -134,6 +137,9 @@ class r_data(object):
         self.num_cores = psutil.cpu_count()
 #        self.stemmer = PorterStemmer()
         self.aug = aug
+        self.identity_columns = [
+            'male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish',
+            'muslim', 'black', 'white', 'psychiatric_or_mental_illness', 'target']
         
         if vec == 'hash':
             self.vectorizer = HashingVectorizer(n_features=self.MAX_LEN,
@@ -161,11 +167,11 @@ class r_data(object):
 
         if tr:
             if self.aug:
-                df_ini = pd.read_csv(path, usecols=['comment_text', 'target']).fillna(' ')
+                df_ini = pd.read_csv(path, usecols=['comment_text']+self.identity_columns)#.fillna(' ')
                 df_aug = self.shuffler(df_ini)
                 df = pd.concat([df_ini, df_aug])
             else:
-                df = pd.read_csv(path, usecols=['comment_text', 'target']).fillna(' ')
+                df = pd.read_csv(path, usecols=['comment_text', 'target']+self.identity_columns)#.fillna(' ')
             return df
         else:
             return pd.read_csv(path, usecols=['comment_text', 'id']).fillna(' ')
@@ -207,9 +213,14 @@ class r_data(object):
             text = re.sub(r"\'scuse", " excuse ", text)
             text = re.sub('\W', ' ', text)
             text = re.sub('\s+', ' ', text)
+            text = re.sub(r"\\", "", text)    
+            text = re.sub(r"\'", "", text)    
+            text = re.sub(r"\"", "", text)
+            text = re.sub(r'<.*?>', '', text)
             text = text.strip(' ')
             return text
-        
+
+                
         df["ast"] = df["comment_text"].apply(lambda x: x.count('*'))
         df["ex"] = df["comment_text"].apply(lambda x: x.count('!'))
         df["qu"] = df["comment_text"].apply(lambda x: x.count('?'))
@@ -226,26 +237,29 @@ class r_data(object):
         df['words_vs_upper'] = df['num_upper'] / df['num_words']
         df['words_vs_lower'] = df['num_lower'] / df['num_words']
         df['num_smilies'] = df['comment_text'].apply(lambda x: sum(x.count(w) for w in [':-)', ':)', ';-)', ';)']))
-        
+        df['title_word_count'] = df['comment_text'].apply(lambda x: len([wrd for wrd in x.split() if wrd.istitle()]))
+        df['stopword_count'] = df['comment_text'].apply(lambda x: len([wrd for wrd in x.split() if wrd.lower() in self.STOP_WORDS]))
+        df["comment_text"] = df["comment_text"].fillna(' ')
         df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([i for i in x if not i.isdigit()]))
         df["comment_text"] = df["comment_text"].apply(lambda x: c_t2(x))
-#        df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([x_[1:] if x_.startswith("'") else x_ for x_ in x]))
-        df["comment_text"] = df["comment_text"].apply(lambda x: remove_stop_words(x, self.STOP_WORDS))
+#        df["comment_text"] = df["comment_text"].apply(lambda x: remove_stop_words(x, self.STOP_WORDS))
         df["comment_text"] = df["comment_text"].apply(lambda x: remove_noise_chars(x, self.CHARS_TO_REMOVE))
-#        df["comment_text"] = df["comment_text"].apply(lambda x: ''.join([self.stemmer.stem(word) for word in x.split()]))
         
 #        df["len_pr_after"] = df["comment_text"].apply(lambda x: len(x))
 #        df["num_words_after"] = df["comment_text"].apply(lambda x: len(x.split()))
         
-        df["num_bad_words"] = df["comment_text"].apply(lambda x: len([word for word in x.split() if word in self.arrBad]))
-        df["num_good_words"] = df["comment_text"].apply(lambda x: len([word for word in x.split() if word in self.arrGood]))
+#        df["num_bad_words"] = df["comment_text"].apply(lambda x: len([word for word in x.split() if word in self.arrBad]))
+#        df["num_good_words"] = df["comment_text"].apply(lambda x: len([word for word in x.split() if word in self.arrGood]))
 #        df['len_pr_ratio'] = df.len_pr_after / df.len_pr
 #        df['num_words_ratio'] = df.num_words_after / df.num_words
-        df['bad_ratio'] = df.num_bad_words / df.num_words
-        df['good_ratio'] = df.num_good_words / df.num_words
+#        df['bad_ratio'] = df.num_bad_words / df.num_words
+#        df['good_ratio'] = df.num_good_words / df.num_words
+        df['sw_ratio'] = df.stopword_count / df.num_words
+        df['tw_ratio'] = df.title_word_count / df.num_words
+        df['word_density'] = df['len_pr'] / (df['num_words']+1)
         
-        df['bad_p_good'] = df.num_bad_words + df.num_good_words
-        df['bad_m_good'] = df.num_bad_words - df.num_good_words
+#        df['bad_p_good'] = df.num_bad_words + df.num_good_words
+#        df['bad_m_good'] = df.num_bad_words - df.num_good_words
         df['ratio_max_len'] = df.len_max_word / df.len_pr
 
         return df
@@ -270,13 +284,10 @@ class r_data(object):
         return X
     
     def get_weights(self, path):
-        identity_columns = [
-            'male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish',
-            'muslim', 'black', 'white', 'psychiatric_or_mental_illness', 'target']
         
-        train = pd.read_csv(path, usecols=identity_columns).fillna(0)
+        train = pd.read_csv(path, usecols=self.identity_columns).fillna(0)
         weights = np.zeros((len(train),))
-        weights += (train[identity_columns].values>=0.5).sum(axis=1).astype(bool).astype(np.int)
+        weights += (train[self.identity_columns].values>=0.5).sum(axis=1).astype(bool).astype(np.int)
         
 #        # Overall
 #        weights = np.ones((len(train),)) / 4
@@ -309,32 +320,27 @@ class r_lgb_model(object):
         self. model_list = [0] * self.k
         
     def custom_loss(self, y_pred, y_true):
-#        ba = balanced_accuracy_score(np.where(y_true >= 0.5, 1, 0), np.where(y_pred >= 0.5, 1, 0))
-        rs = recall_score(np.where(y_true >= 0.5, 1, 0), np.where(y_pred >= 0.5, 1, 0))
-#        rauc = roc_auc_score(y_true, y_pred)
-        return 'custom loss', 1/np.e**(np.log(rs)**2), True
+        precision, recall, thresholds = precision_recall_curve(np.where(y_true >= 0.5, 1, 0), y_pred)
+        AUC = auc(recall, precision)
+        if AUC != AUC:
+            AUC = 0
+        return 'PR_AUC', AUC, True
 
-    def _fit(self, X, y, verbose, esr, weights):
+    def _fit(self, X, y, verbose, esr):
         
         X_train, X_test, y_train, y_test = train_test_split(X, y,
                                                             test_size=0.2,
                                                             random_state=42)
         
-        we, _, _, _ = train_test_split(weights, weights,
-                                       test_size=0.2,
-                                       random_state=42)
-        
         
         self.lgb_model.fit(X_train,
                            y_train,
-#                           sample_weight = we,
                            eval_set=[(X_test, y_test)],
                            verbose=verbose,
                            early_stopping_rounds=esr,
-#                           eval_metric=self.custom_loss
+                           eval_metric=self.custom_loss
                           )
         
-        self.ft_importances = self.lgb_model.feature_importances_
 
 if __name__ == '__main__':
 
@@ -343,7 +349,7 @@ if __name__ == '__main__':
     k = 3
     params = {
         'max_depth': -1,
-        'metric': 'auc',
+#        'metric': 'auc',
         'n_estimators': 20000,
         'learning_rate': 0.1,
 #        'num_leaves': 30,
@@ -351,7 +357,7 @@ if __name__ == '__main__':
         'colsample_bytree': 0.4,
 #        "is_unbalance": True,
         'objective': 'xentropy',
-#        'scale_pos_weight': 7,
+#        'scale_pos_weight': 5,
 #        'max_bin': 512,
 #        'objective': 'regression',
         'n_jobs': -1,
@@ -361,7 +367,7 @@ if __name__ == '__main__':
         'lambda_l2': 0,
     }
     verbose = 50
-    EARLY_STOPPING_ROUNDS = 50
+    EARLY_STOPPING_ROUNDS = 100
     FT_SEL = False
     
     PATH = '../data/'
@@ -375,106 +381,60 @@ if __name__ == '__main__':
          .sample(100000, random_state=42).reset_index(drop=True)
     test = data.read_data(PATH+'test.csv', tr=False)
     
-    print('\t- Computing weights...')
-    weights, loss_weight = data.get_weights(PATH+'train.csv')
-    weights = pd.Series(weights)\
-        .sample(100000, random_state=42).reset_index(drop=True)
-    
     print('\t- Cleaning data...')
-    #    train = data.clean_text(train)
-    #    test = data.clean_text(test)
-    train = data.df_parallelize_run(train, data.clean_text).reset_index(drop=True)
-    test = data.df_parallelize_run(test, data.clean_text).reset_index(drop=True)
+    train_cleaned = data.df_parallelize_run(train, data.clean_text).reset_index(drop=True)
+    test_cleaned = data.df_parallelize_run(test, data.clean_text).reset_index(drop=True)
     
     print('\t- Vectorizer...')
-    data.vector(pd.concat([train['comment_text'], test['comment_text']]))
-    X_words = data.vector(train['comment_text'].values, train=False)
-    X_words_test = data.vector(test['comment_text'].values, train=False)
+    data.vector(pd.concat([train_cleaned['comment_text'], test_cleaned['comment_text']]))
+    X_words = data.vector(train_cleaned['comment_text'].values, train=False)
+    X_words_test = data.vector(test_cleaned['comment_text'].values, train=False)
     
     print('\t- Generating final datasets...')
-    X_cols = ['ast', 'ex', 'qu', 'ar', 'ha', 'len_pr',
-           'num_words', 'len_max_word', 'len_min_word',
-           'bad_ratio', 'good_ratio', 'bad_p_good', 'bad_m_good',
-           'ratio_max_len', 'words_vs_unique',
+    X_cols = ['ast', 'ex', 'qu', 'ar', 'ha', 'len_pr', 'tw_ratio',
+           'num_words', 'len_max_word', 'len_min_word', 'sw_ratio',
+#           'bad_ratio', 'good_ratio', 'bad_m_good',
+           'ratio_max_len', 'words_vs_unique', 'word_density',
            'words_vs_upper', 'words_vs_lower', 'num_smilies']
     
-    y_train = np.where(train['target'] >= 0.5, 1, 0)
-#    y_train = train['target']
-    extra_data = csr_matrix(train[X_cols])
-    del train
+    
+    extra_data = csr_matrix(train_cleaned[X_cols])
+#    del train
     gc.collect()
-    
     X_train = hstack([X_words, extra_data]).tocsr()
-    
+
     del X_words
     del extra_data
-    gc.collect()      
-    
-    print('\n\n| Modeling...\n')
-    model = r_lgb_model(k, params)
-    print('\t- Fitting...')
-    model._fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS, weights)
-    
-    if FT_SEL:
-    
-        df_imp = pd.DataFrame({'feature': [i for i in range(X_train.shape[1])],
-                               'importance': model.lgb_model.feature_importances_})\
-                .sort_values('importance', ascending = False)
-                
-#        X_train_sel = X_train[:, df_imp[df_imp.importance > 3].feature.tolist()]
-#        weights_sel = weights[df_imp[df_imp.importance > 3].feature.tolist()]
-        X_train_sel = X_train[:, df_imp.feature[:1000].tolist()]
-        
-        params = {
-        'max_depth': -1,
-        'metric': 'auc',
-        'n_estimators': 20000,
-        'learning_rate': 0.1,
-        'colsample_bytree': 1,
-        'objective': 'xentropy',
-        'n_jobs': -1,
-        'seed': 42,
-        'bagging_fraction': 0.3,
-        'lambda_l1': 0,
-        'lambda_l2': 0,
-    }
-        
-        print('\n\n| Modeling with FT Selection...\n')
-        model = r_lgb_model(k, params)
-        print('\t- Fitting...')
-        model._fit(X_train_sel, y_train, verbose, EARLY_STOPPING_ROUNDS, weights)
-        del X_train_sel
-    
-    del X_train
-    del y_train
     gc.collect()
     
-    
-    
-    print('\n| Predictions...\n')    
-    print('\t- Generating final datasets...')
-    extra_data = csr_matrix(test[X_cols])
-#    del test
-#    gc.collect()
-    
+    extra_data = csr_matrix(test_cleaned[X_cols])
     X_test = hstack([X_words_test, extra_data]).tocsr()
-    
     del X_words_test
     del extra_data
     gc.collect()
     
-    if FT_SEL:
-        X_test = X_test[:, df_imp.feature[:1000].tolist()]
+    preds_dict = dict()
+#    for target in data.identity_columns:
+    for target in ['target']:
+        y_train = np.where(train[target].fillna(0) >= 0.5, 1, 0)
         
-    print('\t- Making predictions...')
-    preds_tdidf = model.lgb_model.predict_proba(X_test)[:,1]
+        print(f'\n\n| Modeling with target = {target}...\n')
+        model = r_lgb_model(k, params)
+        print('\t- Fitting...')
+        model._fit(X_train, y_train, verbose, EARLY_STOPPING_ROUNDS)
+        
+        print('\n| Predictions...\n')    
+        print('\t- Making predictions...')
+        preds_tdidf = model.lgb_model.predict_proba(X_test)[:,1]
+        
+        preds_dict[target] = preds_tdidf
+        preds_dict[target][:10]
+        
+    preds_df = pd.DataFrame(preds_dict)
     
-    del X_test
-    del data
-    del model
-    gc.collect()
-
     print('\n| Saving submission...')
+#    mms = MinMaxScaler() 
+#    preds_scaled = mms.fit_transform(np.array(preds_df.loc[:,preds_df.columns != 'target'].sum(axis=1)).reshape(-1,1))
 #    submission = pd.read_csv(PATH+'sample_submission.csv')
     submission = pd.DataFrame({'id': test['id'], 'prediction': preds_tdidf})
 #    submission["prediction"] = preds_tdidf
