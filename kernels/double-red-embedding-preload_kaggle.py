@@ -9,7 +9,9 @@ from keras.callbacks import LearningRateScheduler
 
 import time
 
+# =============================================================================
 # Variables
+# =============================================================================
 
 EMBEDDING_FILES = [
     '../input/fasttext-crawl-300d-2m/crawl-300d-2M.vec',
@@ -34,33 +36,6 @@ CHARS_TO_REMOVE = '!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n“”’\'∞θ÷α•à
 
 
 
-
-
-
-# =============================================================================
-# Load Embeddings
-# =============================================================================
-def get_coefs(word, *arr):
-    return word, np.asarray(arr, dtype='float32')
-
-
-def load_embeddings(path):
-    with open(path) as f:
-        return dict(get_coefs(*line.strip().split(' ')) for line in f)
-
-
-def build_matrix(word_index, path):
-    embedding_index = load_embeddings(path)
-    embedding_matrix = np.zeros((len(word_index) + 1, 300))
-    for word, i in word_index.items():
-        try:
-            embedding_matrix[i] = embedding_index[word]
-        except KeyError:
-            pass
-    return embedding_matrix
-
-
-
 # =============================================================================
 # Data
 # =============================================================================
@@ -70,9 +45,13 @@ test_df = pd.read_csv('../input/jigsaw-unintended-bias-in-toxicity-classificatio
 
 
 x_train = train_df[TEXT_COLUMN].astype(str)
-y_train = train_df[TARGET_COLUMN].values
-
 x_test = test_df[TEXT_COLUMN].astype(str)
+
+
+
+train_df["target_trans"] = np.where(train_df['target'] >= 0.5,1,0)
+#y_train = train_df[TARGET_COLUMN].values
+y_train = train_df["target_trans"].values
 
 
 
@@ -101,8 +80,27 @@ x_test = sequence.pad_sequences(x_test, maxlen=MAX_LEN)
 
 
 # =============================================================================
-# Model
+# Load Embeddings
 # =============================================================================
+def get_coefs(word, *arr):
+    return word, np.asarray(arr, dtype='float32')
+
+
+def load_embeddings(path):
+    with open(path) as f:
+        return dict(get_coefs(*line.strip().split(' ')) for line in f)
+
+
+def build_matrix(word_index, path):
+    embedding_index = load_embeddings(path)
+    embedding_matrix = np.zeros((len(word_index) + 1, 300))
+    for word, i in word_index.items():
+        try:
+            embedding_matrix[i] = embedding_index[word]
+        except KeyError:
+            pass
+    return embedding_matrix
+
 print("---- Load Embeddings files at {}".format(time.strftime("%H:%M")) )
 
 embedding_matrix = np.concatenate(
@@ -110,6 +108,20 @@ embedding_matrix = np.concatenate(
 
 checkpoint_predictions = []
 weights = []
+
+
+
+# =============================================================================
+# Model
+# =============================================================================
+import tensorflow as tf
+from keras import backend as K
+
+def auc(y_true, y_pred):
+    auc = tf.metrics.auc(y_true, y_pred)[1]
+    K.get_session().run(tf.local_variables_initializer())
+    return auc
+
 
 
 def build_gpu_model(embedding_matrix):
@@ -128,7 +140,7 @@ def build_gpu_model(embedding_matrix):
     result = Dense(1, activation='sigmoid')(result)
     
     model = Model(inputs=input_layer, outputs=result)
-    model.compile(loss='binary_crossentropy', optimizer='adam')
+    model.compile(loss='binary_crossentropy', optimizer='adam',metrics=[auc])
     model.summary()
     return model
 
@@ -186,7 +198,7 @@ model = build_gpu_model(embedding_matrix)
 print("---- Training net at {}".format(time.strftime("%H:%M")))
 model.fit(x_train,y_train,
         batch_size=BATCH_SIZE,
-        epochs=1,
+        epochs=2,
         verbose=1)
         
 
