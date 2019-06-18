@@ -1,0 +1,3 @@
+https://www.kaggle.com/iezepov/gensim-embeddings-dataset/downloads/crawl-300d-2M.gensim.vectors.npy/1
+
+Forma de cargar los embeddings mas rapido
