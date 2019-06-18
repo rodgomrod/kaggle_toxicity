@@ -112,38 +112,38 @@ checkpoint_predictions = []
 weights = []
 
 
-def build_model(embedding_matrix):
-    input_layer = Input(shape=(None,))
-    x = Embedding(*embedding_matrix.shape, weights=[embedding_matrix], trainable=False)(input_layer)
-    x = SpatialDropout1D(0.2)(x)
-    # x = Dense(256)(x)
-    # x = Flatten()(x)
-    # x = Reshape((-1,600))(x)
-
-    y = Reshape((1,22))(input_layer)
-    y = Bidirectional(CuDNNLSTM(128,return_sequences=True))(y)
-    # y = Flatten()(y)
-    # y = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(y)
-
-    hidden = concatenate([x,y])
-    # hidden = add([hidden, Dense(DENSE_HIDDEN_UNITS, activation='relu')(hidden)])
-    # hidden = add([hidden, Dense(DENSE_HIDDEN_UNITS, activation='relu')(hidden)])
-    # hidden = Flatten()(hidden)
-    hidden = Dense(256, activation='relu')(hidden)
-    result = Dense(128, activation='relu')(hidden)
-    result = Dense(1, activation='sigmoid')(hidden)
-    
-    model = Model(inputs=input_layer, outputs=result)
-    model.compile(loss='binary_crossentropy', optimizer='adam')
-    model.summary()
-    return model
+#def build_model(embedding_matrix):
+#    input_layer = Input(shape=(None,))
+#    x = Embedding(*embedding_matrix.shape, weights=[embedding_matrix], trainable=False)(input_layer)
+#    x = SpatialDropout1D(0.2)(x)
+#    # x = Dense(256)(x)
+#    # x = Flatten()(x)
+#    # x = Reshape((-1,600))(x)
+#
+#    y = Reshape((1,22))(input_layer)
+#    y = Bidirectional(CuDNNLSTM(128,return_sequences=True))(y)
+#    # y = Flatten()(y)
+#    # y = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(y)
+#
+#    hidden = concatenate([x,y])
+#    # hidden = add([hidden, Dense(DENSE_HIDDEN_UNITS, activation='relu')(hidden)])
+#    # hidden = add([hidden, Dense(DENSE_HIDDEN_UNITS, activation='relu')(hidden)])
+#    # hidden = Flatten()(hidden)
+#    hidden = Dense(256, activation='relu')(hidden)
+#    result = Dense(128, activation='relu')(hidden)
+#    result = Dense(1, activation='sigmoid')(hidden)
+#    
+#    model = Model(inputs=input_layer, outputs=result)
+#    model.compile(loss='binary_crossentropy', optimizer='adam')
+#    model.summary()
+#    return model
 
 
 
 
 
 def build_cpu_model(embedding_matrix):
-    input_layer = Input(shape=(1,))
+    input_layer = Input(shape=(220,))
     x = Embedding(328390,600, weights=[embedding_matrix], trainable=False)(input_layer)
     x = Flatten()(x)
 #    x = SpatialDropout1D(0.2)(x)
@@ -152,11 +152,10 @@ def build_cpu_model(embedding_matrix):
 #    x = Reshape((1,600))(x)
 #    x = Dense(256)(x)
     # x = Dense(256)(x)
-    
     # x = Reshape((-1,600))(x)
 
-    y = Reshape((1,22))(input_layer)
-    y = Bidirectional(LSTM(128,return_sequences=True))(input_layer)
+    y = Reshape((1,220))(input_layer)
+    y = Bidirectional(LSTM(128,return_sequences=True))(y)
     y = Flatten()(y)
     # y = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(y)
 
@@ -188,7 +187,9 @@ print("---- Entrenamiento NN")
 model.fit(x_train,y_train,
         batch_size=BATCH_SIZE,
         epochs=1,
-        verbose=2,
+        verbose=1)
+        
+        ,
         sample_weight=[sample_weights.values, np.ones_like(sample_weights)],
     )
 # checkpoint_predictions.append(model.predict(x_test, batch_size=2048)[0].flatten())
