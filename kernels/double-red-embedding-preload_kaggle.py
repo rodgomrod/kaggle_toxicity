@@ -5,7 +5,9 @@ from keras.models import Model
 from keras.layers import Input, Dense, Embedding, SpatialDropout1D, add, concatenate, Reshape,Flatten
 from keras.layers import CuDNNLSTM, Bidirectional, GlobalMaxPooling1D, GlobalAveragePooling1D, LSTM,Dropout
 from keras.preprocessing import text, sequence
+
 from keras.callbacks import LearningRateScheduler
+from tensorflow.keras.callbacks import EarlyStopping
 
 import time
 
@@ -85,7 +87,7 @@ x_test = sequence.pad_sequences(x_test, maxlen=MAX_LEN)
 def get_coefs(word, *arr):
     return word, np.asarray(arr, dtype='float32')
 
-
+84764
 def load_embeddings(path):
     with open(path) as f:
         return dict(get_coefs(*line.strip().split(' ')) for line in f)
@@ -123,18 +125,27 @@ def auc(y_true, y_pred):
     return auc
 
 
+callbacks = [EarlyStopping(monitor='auc', patience=2,verbose=0,mode='max',restore_best_weights=True)]
+
+
+EMBEDDING_INPUT_LEN = embedding_matrix.shape[0]  
+EMBEDDING_OUTPUT_LEN = embedding_matrix.shape[1]  
+print(f'EMBEDDING_INPUT_LEN:{EMBEDDING_INPUT_LEN} | EMBEDDING_OUTPUT_LEN:{EMBEDDING_OUTPUT_LEN}')
 
 def build_gpu_model(embedding_matrix):
     input_layer = Input(shape=(220,))
-    x = Embedding(328390,600, weights=[embedding_matrix], trainable=False)(input_layer)
-    x = Flatten()(x)
+    x = Embedding(EMBEDDING_INPUT_LEN,EMBEDDING_OUTPUT_LEN, weights=[embedding_matrix], trainable=False)(input_layer)
+    x = Bidirectional(CuDNNLSTM(64,return_sequences=False))(x)
+    #x = Flatten()(x)
     x = Dropout(0.2)(x)
 
-    y = Reshape((1,220))(input_layer)
-    y = Bidirectional(CuDNNLSTM(128,return_sequences=True))(y)
-    y = Flatten()(y)
+    y = Reshape((220,1))(input_layer)
+    y = Bidirectional(CuDNNLSTM(128,return_sequences=False))(y)
+#    y = Bidirectional(CuDNNLSTM(128,return_sequences=True))(y)
+    #y = Flatten()(y)
     
     hidden = concatenate([x,y],axis=1)
+#    hidden = Dense(512, activation='relu')(hidden)
     hidden = Dense(256, activation='relu')(hidden)
     result = Dense(128, activation='relu')(hidden)
     result = Dense(1, activation='sigmoid')(result)
@@ -147,39 +158,40 @@ def build_gpu_model(embedding_matrix):
 
 
 
-
-def build_cpu_model(embedding_matrix):
-    input_layer = Input(shape=(220,))
-    x = Embedding(328390,600, weights=[embedding_matrix], trainable=False)(input_layer)
-    x = Flatten()(x)
-#    x = SpatialDropout1D(0.2)(x)
-    x = Dropout(0.2)(x)
-
-#    x = Reshape((1,600))(x)
-#    x = Dense(256)(x)
-    # x = Dense(256)(x)
-    # x = Reshape((-1,600))(x)
-
-    y = Reshape((1,220))(input_layer)
-    y = Bidirectional(LSTM(128,return_sequences=True))(y)
-    y = Flatten()(y)
-    # y = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(y)
-
-
-
-    
-    hidden = concatenate([x,y],axis=1)
-    # hidden = add([hidden, Dense(DENSE_HIDDEN_UNITS, activation='relu')(hidden)])
-    # hidden = add([hidden, Dense(DENSE_HIDDEN_UNITS, activation='relu')(hidden)])
-    # hidden = Flatten()(hidden)
-    hidden = Dense(256, activation='relu')(hidden)
-    result = Dense(128, activation='relu')(hidden)
-    result = Dense(1, activation='sigmoid')(result)
-    
-    model = Model(inputs=input_layer, outputs=result)
-    model.compile(loss='binary_crossentropy', optimizer='adam')
-    model.summary()
-    return model
+#
+#def build_cpu_model(embedding_matrix):
+#    input_layer = Input(shape=(220,))
+#    x = Embedding(328390,600, weights=[embedding_matrix], trainable=False)(input_layer)
+#    x = Flatten()(x)
+##    x = SpatialDropout1D(0.2)(x)
+#    x = Dropout(0.2)(x)
+#
+##    x = Reshape((1,600))(x)
+##    x = Dense(256)(x)
+#    # x = Dense(256)(x)
+#    # x = Reshape((-1,600))(x)
+#
+#    y = Reshape((1,220))(input_layer)
+#    y = Bidirectional(LSTM(256,return_sequences=True))(y)
+#    y = Flatten()(y)
+#    # y = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(y)
+#
+#
+#
+#    
+#    hidden = concatenate([x,y],axis=1)
+#    # hidden = add([hidden, Dense(DENSE_HIDDEN_UNITS, activation='relu')(hidden)])
+#    # hidden = add([hidden, Dense(DENSE_HIDDEN_UNITS, activation='relu')(hidden)])
+#    # hidden = Flatten()(hidden)
+#    hidden = Dense(512, activation='relu')(hidden)
+#    result = Dense(256, activation='relu')(hidden)
+#    result = Dense(128, activation='relu')(hidden)
+#    result = Dense(1, activation='sigmoid')(result)
+#    
+#    model = Model(inputs=input_layer, outputs=result)
+#    model.compile(loss='binary_crossentropy', optimizer='adam')
+#    model.summary()
+#    return model
 
 
 
@@ -188,18 +200,15 @@ def build_cpu_model(embedding_matrix):
 
 
 print("---- Building model  at {}".format(time.strftime("%H:%M")))
-
 model = build_gpu_model(embedding_matrix)
-
-
-
 
 
 print("---- Training net at {}".format(time.strftime("%H:%M")))
 model.fit(x_train,y_train,
         batch_size=BATCH_SIZE,
-        epochs=2,
-        verbose=1)
+        epochs=5,
+        callbacks=callbacks, 
+        verbose=2)
         
 
 # checkpoint_predictions.append(model.predict(x_test, batch_size=2048)[0].flatten())
